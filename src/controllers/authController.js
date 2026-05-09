@@ -1,6 +1,9 @@
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 
+const QRCode = require("qrcode");
+const { generateSecret, generateURI, verify } = require("otplib");
+
 const register = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -113,7 +116,92 @@ const login = async (req, res) => {
     }
   };
 
-module.exports = {
-  register,
-  login,
-};
+  const setupMFA = async (req, res) => {
+    try {
+      const user = req.user;
+  
+      // Generate secret
+      const secret = generateSecret();
+  
+      // Create OTP auth URL
+      const otpAuthUrl = generateURI({
+        label: user.email,
+        issuer: "AdvancedAuthAPI",
+        secret,
+      });
+  
+      // Generate QR code
+      const qrCodeImageUrl = await QRCode.toDataURL(otpAuthUrl);
+  
+      // Save secret temporarily
+      user.mfaSecret = secret;
+  
+      await user.save();
+  
+      return res.status(200).json({
+        success: true,
+        message: "MFA setup initialized",
+        secret,
+        qrCodeImageUrl,
+      });
+    } catch (error) {
+      console.error(error);
+  
+      return res.status(500).json({
+        success: false,
+        message: "Failed to setup MFA",
+      });
+    }
+  };
+
+  const verifyMFA = async (req, res) => {
+    try {
+      const user = req.user;
+  
+      const { token } = req.body;
+  
+      if (!token) {
+        return res.status(400).json({
+          success: false,
+          message: "MFA token is required",
+        });
+      }
+  
+      const verification = await verify({
+        token,
+        secret: user.mfaSecret,
+      });
+
+      const isValid = verification?.valid === true;
+  
+      if (!isValid) {
+        return res.status(401).json({
+          success: false,
+          message: "Invalid MFA code",
+        });
+      }
+  
+      user.mfaEnabled = true;
+  
+      await user.save();
+  
+      return res.status(200).json({
+        success: true,
+        message: "MFA enabled successfully",
+      });
+    } catch (error) {
+      console.error(error);
+  
+      return res.status(500).json({
+        success: false,
+        message: "Failed to verify MFA",
+      });
+    }
+  };
+
+  module.exports = {
+    register,
+    login,
+    setupMFA,
+    verifyMFA,
+  };
