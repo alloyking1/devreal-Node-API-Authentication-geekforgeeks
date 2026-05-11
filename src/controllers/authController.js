@@ -4,6 +4,16 @@ const User = require("../models/User");
 const QRCode = require("qrcode");
 const { generateSecret, generateURI, verify } = require("otplib");
 
+const Session = require("../models/Session");
+const {
+  generateAccessToken,
+  generateRefreshToken,
+  hashToken,
+  generateMFAToken,
+} = require("../utils/tokenUtils");
+
+const jwt = require("jsonwebtoken");
+
 const register = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -65,7 +75,6 @@ const login = async (req, res) => {
     try {
       const { email, password } = req.body;
   
-      // Basic validation
       if (!email || !password) {
         return res.status(400).json({
           success: false,
@@ -73,10 +82,8 @@ const login = async (req, res) => {
         });
       }
   
-      // Find user
       const user = await User.findOne({ email });
   
-      // Prevent user enumeration attacks
       if (!user) {
         return res.status(401).json({
           success: false,
@@ -84,7 +91,6 @@ const login = async (req, res) => {
         });
       }
   
-      // Compare password with stored hash
       const isPasswordValid = await bcrypt.compare(
         password,
         user.passwordHash
@@ -97,14 +103,45 @@ const login = async (req, res) => {
         });
       }
   
+      // MFA ENABLED
+      if (user.mfaEnabled) {
+        const mfaToken = generateMFAToken(user);
+  
+        return res.status(200).json({
+          success: true,
+          requiresMFA: true,
+          message: "MFA verification required",
+          mfaToken,
+        });
+      }
+  
+      // MFA DISABLED
+      const accessToken = generateAccessToken(user);
+  
+      const refreshToken = generateRefreshToken();
+  
+      const refreshTokenHash = hashToken(refreshToken);
+  
+      const expiresAt = new Date();
+  
+      expiresAt.setDate(
+        expiresAt.getDate() +
+          Number(process.env.REFRESH_TOKEN_EXPIRES_DAYS)
+      );
+  
+      await Session.create({
+        userId: user._id,
+        refreshTokenHash,
+        userAgent: req.headers["user-agent"],
+        ipAddress: req.ip,
+        expiresAt,
+      });
+  
       return res.status(200).json({
         success: true,
         message: "Login successful",
-        user: {
-          id: user._id,
-          email: user.email,
-          mfaEnabled: user.mfaEnabled,
-        },
+        accessToken,
+        refreshToken,
       });
     } catch (error) {
       console.error(error);
@@ -199,9 +236,179 @@ const login = async (req, res) => {
     }
   };
 
+  const verifyMFALogin = async (req, res) => {
+    try {
+      const { token, mfaToken } = req.body;
+  
+      if (!token || !mfaToken) {
+        return res.status(400).json({
+          success: false,
+          message: "Token and MFA token are required",
+        });
+      }
+  
+      // Verify temporary MFA JWT
+      const decoded = jwt.verify(
+        mfaToken,
+        process.env.JWT_ACCESS_SECRET
+      );
+  
+      if (decoded.type !== "mfa") {
+        return res.status(401).json({
+          success: false,
+          message: "Invalid MFA session",
+        });
+      }
+  
+      const user = await User.findById(decoded.userId);
+  
+      if (!user || !user.mfaEnabled) {
+        return res.status(401).json({
+          success: false,
+          message: "Invalid user",
+        });
+      }
+  
+      // Verify OTP
+      const verification = await verify({
+        token,
+        secret: user.mfaSecret,
+      });
+  
+      const isValid = verification?.valid === true;
+  
+      if (!isValid) {
+        return res.status(401).json({
+          success: false,
+          message: "Invalid MFA code",
+        });
+      }
+  
+      // Issue REAL auth tokens
+      const accessToken = generateAccessToken(user);
+  
+      const refreshToken = generateRefreshToken();
+  
+      const refreshTokenHash = hashToken(refreshToken);
+  
+      const expiresAt = new Date();
+  
+      expiresAt.setDate(
+        expiresAt.getDate() +
+          Number(process.env.REFRESH_TOKEN_EXPIRES_DAYS)
+      );
+  
+      await Session.create({
+        userId: user._id,
+        refreshTokenHash,
+        userAgent: req.headers["user-agent"],
+        ipAddress: req.ip,
+        expiresAt,
+      });
+  
+      return res.status(200).json({
+        success: true,
+        message: "MFA login successful",
+        accessToken,
+        refreshToken,
+      });
+    } catch (error) {
+      console.error(error);
+  
+      return res.status(401).json({
+        success: false,
+        message: "Invalid or expired MFA session",
+      });
+    }
+  };
+
+  const getMe = async (req, res) => {
+    return res.status(200).json({
+      success: true,
+      user: {
+        id: req.user._id,
+        email: req.user.email,
+        mfaEnabled: req.user.mfaEnabled,
+      },
+    });
+  };
+
+
+  const refreshAccessToken = async (req, res) => {
+    try {
+      const { refreshToken } = req.body;
+  
+      if (!refreshToken) {
+        return res.status(401).json({
+          success: false,
+          message: "Refresh token required",
+        });
+      }
+  
+      const refreshTokenHash = hashToken(refreshToken);
+  
+      const session = await Session.findOne({
+        refreshTokenHash,
+        revokedAt: null,
+      });
+  
+      if (!session) {
+        return res.status(401).json({
+          success: false,
+          message: "Invalid session",
+        });
+      }
+  
+      // Expired session
+      if (session.expiresAt < new Date()) {
+        return res.status(401).json({
+          success: false,
+          message: "Session expired",
+        });
+      }
+  
+      const user = await User.findById(session.userId);
+  
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          message: "Invalid user",
+        });
+      }
+  
+      // ROTATE REFRESH TOKEN
+      const newRefreshToken = generateRefreshToken();
+  
+      const newRefreshTokenHash = hashToken(newRefreshToken);
+  
+      session.refreshTokenHash = newRefreshTokenHash;
+  
+      await session.save();
+  
+      // Generate new access token
+      const accessToken = generateAccessToken(user);
+  
+      return res.status(200).json({
+        success: true,
+        accessToken,
+        refreshToken: newRefreshToken,
+      });
+    } catch (error) {
+      console.error(error);
+  
+      return res.status(500).json({
+        success: false,
+        message: "Failed to refresh token",
+      });
+    }
+  };
+
   module.exports = {
     register,
     login,
     setupMFA,
     verifyMFA,
+    verifyMFALogin,
+    getMe,
+    refreshAccessToken,
   };
