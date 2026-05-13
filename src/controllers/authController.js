@@ -403,6 +403,69 @@ const login = async (req, res) => {
     }
   };
 
+  const logout = async (req, res) => {
+    try {
+      const { refreshToken } = req.body;
+  
+      if (!refreshToken) {
+        return res.status(400).json({
+          success: false,
+          message: "Refresh token required",
+        });
+      }
+  
+      const refreshTokenHash = hashToken(refreshToken);
+  
+      await Session.findOneAndUpdate(
+        {
+          refreshTokenHash,
+          revokedAt: null,
+        },
+        {
+          revokedAt: new Date(),
+        }
+      );
+  
+      return res.status(200).json({
+        success: true,
+        message: "Logged out successfully",
+      });
+    } catch (error) {
+      console.error(error);
+  
+      return res.status(500).json({
+        success: false,
+        message: "Logout failed",
+      });
+    }
+  };
+
+  const logoutAll = async (req, res) => {
+    try {
+      await Session.updateMany(
+        {
+          userId: req.user._id,
+          revokedAt: null,
+        },
+        {
+          revokedAt: new Date(),
+        }
+      );
+  
+      return res.status(200).json({
+        success: true,
+        message: "Logged out from all devices",
+      });
+    } catch (error) {
+      console.error(error);
+  
+      return res.status(500).json({
+        success: false,
+        message: "Failed to logout all sessions",
+      });
+    }
+  };
+
   module.exports = {
     register,
     login,
@@ -411,4 +474,6 @@ const login = async (req, res) => {
     verifyMFALogin,
     getMe,
     refreshAccessToken,
+    logout,
+    logoutAll,
   };

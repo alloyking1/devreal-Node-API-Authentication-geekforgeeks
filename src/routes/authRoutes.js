@@ -8,6 +8,8 @@ const {
     verifyMFALogin,
     getMe,
     refreshAccessToken,
+    logout,
+    logoutAll,
   } = require("../controllers/authController");
 const requireAuth = require("../middleware/authMiddleware");
 
@@ -20,5 +22,8 @@ router.post("/mfa/verify", tempAuth, verifyMFA);
 router.post("/mfa/login/verify", verifyMFALogin);
 router.get("/me", requireAuth, getMe);
 router.post("/refresh", refreshAccessToken);
+
+router.post("/logout", logout);
+router.post("/logout-all", requireAuth, logoutAll);
 
 module.exports = router;
