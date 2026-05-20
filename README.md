@@ -1,4 +1,4 @@
-# DevReal Node API Authentication
+# DevRel Node API Authentication
 
 Authentication API built with Node.js, Express, and MongoDB for learning and tutorial purposes.
 
